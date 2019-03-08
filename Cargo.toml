@@ -1,0 +1,8 @@
+[package]
+name = "fractals"
+version = "0.1.0"
+authors = ["Adrian Hodos <adi.hodos@gmail.com>"]
+
+[dependencies]
+rgb = "0.8"
+png = "0.14"
