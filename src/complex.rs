@@ -14,6 +14,10 @@ impl Complex {
     pub fn abs_squared(&self) -> f32 {
         self.re * self.re + self.im * self.im
     }
+
+    pub fn abs(&self) -> f32 {
+        self.abs_squared().sqrt()
+    }
 }
 
 impl Add for Complex {
