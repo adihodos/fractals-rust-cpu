@@ -86,7 +86,7 @@ fn hsv_to_rgb(hsv: (f32, f32, f32)) -> (u8, u8, u8) {
 }
 
 fn color_simple(n: f32, max_iterations: i32, _z: Complex) -> RGB8 {
-    let px = ((n / max_iterations as f32) * 255f32) as u8;
+    let px = 255u8 - ((n / max_iterations as f32) * 255f32) as u8;
     (px, px, px)
 }
 
@@ -105,13 +105,19 @@ fn color_log(n: f32, _max_iterations: i32, z: Complex) -> RGB8 {
     let n = n + 1f32 - (z.abs().ln() / 2f32.ln()).ln();
 
     (
-        ((-(n * 0.025_f32).cos() + 1_f32) * 255f32) as u8,
-        ((-(n * 0.080_f32).cos() + 1_f32) * 255f32) as u8,
-        ((-(n * 0.120_f32).cos() + 1_f32) * 255f32) as u8,
+        ((-(n * 0.025_f32).cos() + 1_f32) * 127f32) as u8,
+        ((-(n * 0.080_f32).cos() + 1_f32) * 127f32) as u8,
+        ((-(n * 0.120_f32).cos() + 1_f32) * 127f32) as u8,
     )
 }
 
-fn color_hsv(iterations: f32, max_iterations: i32, _z: Complex) -> (u8, u8, u8) {
+fn color_hsv(iterations: f32, max_iterations: i32, z: Complex) -> (u8, u8, u8) {
+    let iterations = if iterations == max_iterations as f32 {
+        max_iterations as f32
+    } else {
+        iterations as f32 + 1f32 - z.abs().log2().log10()
+    };
+
     let hsv = (
         (iterations / max_iterations as f32) * 360f32,
         1f32,
@@ -123,16 +129,6 @@ fn color_hsv(iterations: f32, max_iterations: i32, _z: Complex) -> (u8, u8, u8) 
     );
 
     hsv_to_rgb(hsv)
-}
-
-fn color_hsv_smooth(iterations: f32, max_iterations: i32, z: Complex) -> (u8, u8, u8) {
-    let m = if iterations >= max_iterations as f32 {
-        max_iterations as f32
-    } else {
-        iterations + 1f32 - z.abs().log2().log10()
-    };
-
-    color_hsv(m, max_iterations, z)
 }
 
 fn linear_interpolate(a: f32, b: f32, t: f32) -> f32 {
@@ -147,12 +143,11 @@ struct WorkPackage {
     y1: i32,
 }
 
-#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
 enum Coloring {
     BlackWhite,
     Hsv,
     Smooth,
-    SmoothHSV,
     Log,
     Histogram,
 }
@@ -179,6 +174,69 @@ struct WorkResult {
     pixel: (i32, i32),
     z: Complex,
     n: f32,
+}
+
+struct HistogramColoringState {
+    histogram: Vec<i32>,
+    hues: Vec<f32>,
+    total: i32,
+}
+
+impl HistogramColoringState {
+    fn new(escapes: &[WorkResult], args: &ProgramArgs) -> HistogramColoringState {
+        let mut histogram = vec![0i32; args.iterations as usize];
+
+        for y in 0..args.screen_height {
+            for x in 0..args.screen_width {
+                let e = escapes[(y * args.screen_width + x) as usize];
+
+                if e.n < args.iterations as f32 {
+                    histogram[e.n.floor() as usize] += 1;
+                }
+            }
+        }
+
+        let total: i32 = histogram.iter().sum();
+        let mut hues = Vec::<f32>::new();
+        let mut h: f32 = 0f32;
+
+        for i in 0..args.iterations {
+            h += histogram[i as usize] as f32 / total as f32;
+            hues.push(h);
+        }
+        hues.push(h);
+
+        HistogramColoringState {
+            histogram,
+            hues,
+            total,
+        }
+    }
+
+    fn colorize(&self, iterations: f32, args: &ProgramArgs, z: Complex) -> RGB8 {
+        let iterations = if iterations >= args.iterations as f32 {
+            args.iterations as f32
+        } else {
+            iterations as f32 + 1f32 - z.abs().log2().log10()
+        };
+
+        let hsv = (
+            360f32
+                - linear_interpolate(
+                    self.hues[iterations.floor() as usize],
+                    self.hues[iterations.ceil() as usize],
+                    iterations.fract(),
+                ) * 360f32,
+            1f32,
+            if iterations < args.iterations as f32 {
+                1f32
+            } else {
+                0f32
+            },
+        );
+
+        hsv_to_rgb(hsv)
+    }
 }
 
 fn main() {
@@ -249,17 +307,11 @@ fn main() {
                                 iterations += 1;
                             }
 
-                            let m = if iterations == args.iterations {
-                                args.iterations as f32
-                            } else {
-                                iterations as f32 + 1f32 - z.abs().log2().log10()
-                            };
-
                             chan_sender
                                 .send(WorkResult {
                                     pixel: (px, py),
                                     z,
-                                    n: m,
+                                    n: iterations as f32,
                                 })
                                 .unwrap();
                         }
@@ -282,6 +334,12 @@ fn main() {
         w.join().expect("Failed to join worker thread!");
     }
 
+    let histogram_coloring = if args.coloring == Coloring::Histogram {
+        Some(HistogramColoringState::new(&escapes, &args))
+    } else {
+        None
+    };
+
     for y in 0..args.screen_height {
         for x in 0..args.screen_width {
             let e = escapes[(y * args.screen_width + x) as usize];
@@ -291,61 +349,18 @@ fn main() {
                 Coloring::Hsv => color_hsv(e.n, args.iterations, e.z),
                 Coloring::Log => color_log(e.n, args.iterations, e.z),
                 Coloring::Smooth => color_smooth(e.n, args.iterations, e.z),
-                Coloring::SmoothHSV => color_hsv_smooth(e.n, args.iterations, e.z),
-                Coloring::Histogram => {
-                    let mut histogram = vec![0i32; args.iterations as usize];
-                    // let mut values = vec![0f32; (args.screen_width * args.screen_height) as usize];
-
-                    if e.n < args.iterations as f32 {
-                        histogram[e.n.floor() as usize] += 1;
-                    }
-
-                    let total: i32 = histogram.iter().sum();
-                    let mut hues = Vec::<f32>::new();
-                    let mut h: f32 = 0f32;
-
-                    for i in 0..args.iterations {
-                        h += histogram[i as usize] as f32 / total as f32;
-                        hues.push(h);
-                    }
-                    hues.push(h);
-
-                    todo!("Not implemented yet");
-                }
+                Coloring::Histogram => histogram_coloring
+                    .as_ref()
+                    .map(|histogram| histogram.colorize(e.n, &args, e.z))
+                    .unwrap(),
             };
 
             pixels[(y * args.screen_width + x) as usize] = pixel_color;
         }
     }
 
-    //
-    // colorize fractal
-
-    // for y in 0..args.screen_height {
-    //     for x in 0..args.screen_width {
-    //         let m = values[(y * args.screen_width + x) as usize];
-
-    //         let hsv = (
-    //             360f32
-    //                 - linear_interpolate(
-    //                     hues[m.floor() as usize],
-    //                     hues[m.ceil() as usize],
-    //                     m.fract(),
-    //                 ) * 360f32,
-    //             1f32,
-    //             if m < args.iterations as f32 {
-    //                 1f32
-    //             } else {
-    //                 0f32
-    //             },
-    //         );
-
-    //         pixels[(y * args.screen_width + x) as usize] = hsv_to_rgb(hsv);
-    //     }
-    // }
-
     write_image(
-        "mandel.pbm".into(),
+        "mandelbrot.pbm".into(),
         args.screen_width,
         args.screen_height,
         &pixels,
