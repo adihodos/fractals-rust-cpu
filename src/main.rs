@@ -14,17 +14,14 @@ type RGB8 = (u8, u8, u8);
 fn screen_coords_to_complex_coords(
     px: f32,
     py: f32,
-    sxmin: f32,
-    sxmax: f32,
-    symin: f32,
-    symax: f32,
+    args: &ProgramArgs,
     dxmin: f32,
     dxmax: f32,
     dymin: f32,
     dymax: f32,
 ) -> Complex {
-    let x = (px / (sxmax - sxmin)) * (dxmax - dxmin) + dxmin;
-    let y = (py / (symax - symin)) * (dymax - dymin) + dymin;
+    let x = (px / args.screen_width as f32) * (dxmax - dxmin) + dxmin;
+    let y = (py / args.screen_height as f32) * (dymax - dymin) + dymin;
 
     Complex { re: x, im: y }
 }
@@ -152,7 +149,7 @@ enum Coloring {
     Histogram,
 }
 
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Copy, Clone, Debug)]
 #[command(author, version, about, long_about = None)]
 struct ProgramArgs {
     #[arg(long, default_value_t = 1024)]
@@ -167,6 +164,12 @@ struct ProgramArgs {
     workers: i32,
     #[arg(short = 'c', value_enum, default_value_t = Coloring::BlackWhite)]
     coloring: Coloring,
+    #[arg(short = 'z', default_value_t = 1f32)]
+    zoom: f32,
+    #[arg(default_value_t = 0f32)]
+    ox: f32,
+    #[arg(default_value_t = 0f32)]
+    oy: f32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -239,6 +242,14 @@ impl HistogramColoringState {
     }
 }
 
+const FRACTAL_XMIN: f32 = -2f32;
+const FRACTAL_XMAX: f32 = 2f32;
+const FRACTAL_YMIN: f32 = -1f32;
+const FRACTAL_YMAX: f32 = 1f32;
+
+const FRACTAL_HALF_WIDTH: f32 = (FRACTAL_XMAX - FRACTAL_XMIN) * 0.5f32;
+const FRACTAL_HALF_HEIGHT: f32 = (FRACTAL_YMAX - FRACTAL_YMIN) * 0.5f32;
+
 fn main() {
     let args = ProgramArgs::parse();
     println!("{:?}", args);
@@ -270,6 +281,11 @@ fn main() {
 
     let (sender, receiver) = std::sync::mpsc::channel::<WorkResult>();
 
+    let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
+    let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
+    let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
+    let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
+
     let work_packages = Arc::new(Mutex::new(work_packages));
     let workers = (0..args.workers)
         .map(|_| {
@@ -287,16 +303,7 @@ fn main() {
                     for py in work_pkg.y0..work_pkg.y1 {
                         for px in work_pkg.x0..work_pkg.x1 {
                             let c = screen_coords_to_complex_coords(
-                                px as f32,
-                                py as f32,
-                                0f32,
-                                args.screen_width as f32,
-                                0f32,
-                                args.screen_height as f32,
-                                -2.75f32,
-                                1f32,
-                                -1f32,
-                                1f32,
+                                px as f32, py as f32, &args, fxmin, fxmax, fymin, fymax,
                             );
 
                             let mut z = Complex::new(0f32, 0f32);
