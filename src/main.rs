@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 
 use clap::Parser;
+use enum_iterator::{next_cycle, previous_cycle};
 use rayon::prelude::*;
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Mod};
 use sdl2::rect::Rect;
 use sdl2::video::WindowBuilder;
 use std::io::{Error, ErrorKind};
@@ -145,7 +146,7 @@ struct WorkPackage {
     y1: i32,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum, enum_iterator::Sequence)]
 enum Coloring {
     BlackWhite,
     Hsv,
@@ -163,9 +164,9 @@ struct ProgramArgs {
     screen_height: i32,
     #[arg(short = 't', long, default_value_t = 8, value_parser = clap::value_parser!(i32).range(4..512))]
     tile_size: i32,
-    #[arg(short = 'i', long, default_value_t = 16)]
+    #[arg(short = 'i', long, default_value_t = 16, value_parser = clap::value_parser!(i32).range(4..2048))]
     iterations: i32,
-    #[arg(short = 'w', long, default_value_t = 8, value_parser = clap::value_parser!(i32).range(1..512))]
+    #[arg(short = 'w', long, default_value_t = 8, value_parser = clap::value_parser!(i32).range(4..512))]
     workers: i32,
     #[arg(short = 'c', value_enum, default_value_t = Coloring::BlackWhite)]
     coloring: Coloring,
@@ -191,6 +192,22 @@ impl std::default::Default for ProgramArgs {
             oy: 0f32,
         }
     }
+}
+
+impl ProgramArgs {
+    pub const MIN_TERATIONS: i32 = 4;
+    pub const MAX_ITERATIONS: i32 = 2048;
+    pub const ZOOM_IN_FACTOR: f32 = 0.85f32;
+    pub const ZOOM_OUT_FACTOR: f32 = 2f32;
+    const FRACTAL_XMIN: f32 = -2f32;
+    const FRACTAL_XMAX: f32 = 2f32;
+    const FRACTAL_YMIN: f32 = -1f32;
+    const FRACTAL_YMAX: f32 = 1f32;
+
+    const FRACTAL_HALF_WIDTH: f32 =
+        (ProgramArgs::FRACTAL_XMAX - ProgramArgs::FRACTAL_XMIN) * 0.5f32;
+    const FRACTAL_HALF_HEIGHT: f32 =
+        (ProgramArgs::FRACTAL_YMAX - ProgramArgs::FRACTAL_YMIN) * 0.5f32;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -263,138 +280,6 @@ impl HistogramColoringState {
     }
 }
 
-const FRACTAL_XMIN: f32 = -2f32;
-const FRACTAL_XMAX: f32 = 2f32;
-const FRACTAL_YMIN: f32 = -1f32;
-const FRACTAL_YMAX: f32 = 1f32;
-
-const FRACTAL_HALF_WIDTH: f32 = (FRACTAL_XMAX - FRACTAL_XMIN) * 0.5f32;
-const FRACTAL_HALF_HEIGHT: f32 = (FRACTAL_YMAX - FRACTAL_YMIN) * 0.5f32;
-
-// fn main() {
-//     let args = ProgramArgs::parse();
-//     println!("{:?}", args);
-
-//     let mut pixels = vec![(0u8, 0u8, 0u8); (args.screen_width * args.screen_height) as usize];
-//     let mut escapes = vec![
-//         WorkResult {
-//             pixel: (0, 0),
-//             z: Complex::new(0f32, 0f32),
-//             n: 0f32
-//         };
-//         (args.screen_width * args.screen_height) as usize
-//     ];
-
-//     let packages_x = args.screen_width / args.tile_size;
-//     let packages_y = args.screen_height / args.tile_size;
-
-//     let mut work_packages = Vec::<WorkPackage>::new();
-//     for y in 0..args.tile_size {
-//         for x in 0..args.tile_size {
-//             work_packages.push(WorkPackage {
-//                 x0: (x * packages_x).min(args.screen_width),
-//                 y0: (y * packages_y).min(args.screen_height),
-//                 x1: ((x + 1) * packages_x).min(args.screen_width),
-//                 y1: ((y + 1) * packages_y).min(args.screen_width),
-//             })
-//         }
-//     }
-
-//     let (sender, receiver) = std::sync::mpsc::channel::<WorkResult>();
-
-//     let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
-//     let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
-//     let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
-//     let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
-
-//     let work_packages = Arc::new(Mutex::new(work_packages));
-//     let workers = (0..args.workers)
-//         .map(|_| {
-//             let work_queue = Arc::clone(&work_packages);
-//             let chan_sender = sender.clone();
-
-//             thread::spawn(move || 'main_loop: loop {
-//                 let maybe_work = work_queue
-//                     .lock()
-//                     .ok()
-//                     .map(|mut wkqueue| wkqueue.pop())
-//                     .flatten();
-
-//                 if let Some(work_pkg) = maybe_work {
-//                     for py in work_pkg.y0..work_pkg.y1 {
-//                         for px in work_pkg.x0..work_pkg.x1 {
-//                             let c = screen_coords_to_complex_coords(
-//                                 px as f32, py as f32, &args, fxmin, fxmax, fymin, fymax,
-//                             );
-
-//                             let mut z = Complex::new(0f32, 0f32);
-//                             let mut iterations = 0;
-
-//                             while z.abs_squared() <= 4f32 && iterations < args.iterations {
-//                                 z = z * z + c;
-//                                 iterations += 1;
-//                             }
-
-//                             chan_sender
-//                                 .send(WorkResult {
-//                                     pixel: (px, py),
-//                                     z,
-//                                     n: iterations as f32,
-//                                 })
-//                                 .unwrap();
-//                         }
-//                     }
-//                 } else {
-//                     break 'main_loop;
-//                 }
-//             })
-//         })
-//         .collect::<Vec<_>>();
-
-//     drop(sender);
-
-//     for res in receiver.iter() {
-//         let (px, py) = res.pixel;
-//         escapes[(py * args.screen_width + px) as usize] = res;
-//     }
-
-//     for w in workers {
-//         w.join().expect("Failed to join worker thread!");
-//     }
-
-//     let histogram_coloring = if args.coloring == Coloring::Histogram {
-//         Some(HistogramColoringState::new(&escapes, &args))
-//     } else {
-//         None
-//     };
-
-//     for y in 0..args.screen_height {
-//         for x in 0..args.screen_width {
-//             let e = escapes[(y * args.screen_width + x) as usize];
-
-//             let pixel_color = match args.coloring {
-//                 Coloring::BlackWhite => color_simple(e.n, args.iterations, e.z),
-//                 Coloring::Hsv => color_hsv(e.n, args.iterations, e.z),
-//                 Coloring::Log => color_log(e.n, args.iterations, e.z),
-//                 Coloring::Smooth => color_smooth(e.n, args.iterations, e.z),
-//                 Coloring::Histogram => histogram_coloring
-//                     .as_ref()
-//                     .map(|histogram| histogram.colorize(e.n, &args, e.z))
-//                     .unwrap(),
-//             };
-
-//             pixels[(y * args.screen_width + x) as usize] = pixel_color;
-//         }
-//     }
-
-//     write_image(
-//         "mandelbrot.pbm".into(),
-//         args.screen_width,
-//         args.screen_height,
-//         &pixels,
-//     );
-// }
-
 fn pick_main_display(vid_sys: &sdl2::VideoSubsystem) -> std::io::Result<Rect> {
     vid_sys
         .num_video_displays()
@@ -409,6 +294,13 @@ fn pick_main_display(vid_sys: &sdl2::VideoSubsystem) -> std::io::Result<Rect> {
         })
         .flatten()
         .ok_or_else(|| Error::new(ErrorKind::Other, "Failed to get main display"))
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+enum ModKeys {
+    LeftControl,
+    RightControl,
 }
 
 fn main() -> std::io::Result<()> {
@@ -466,6 +358,12 @@ fn main() -> std::io::Result<()> {
     .build()
     .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
+    sdl_ctx.mouse().warp_mouse_in_window(
+        &main_window,
+        (screen_bounds.width() / 2) as i32,
+        (screen_bounds.height() / 2) as i32,
+    );
+
     let mut canvas = main_window
         .into_canvas()
         .build()
@@ -489,12 +387,6 @@ fn main() -> std::io::Result<()> {
     println!("Texture {:?}", fractal_texture.query());
 
     let mut pixels = vec![255u8; (screen_bounds.width() * screen_bounds.height() * 4) as usize];
-    for chunk in pixels.chunks_mut(4) {
-        chunk[0] = 0;
-        chunk[1] = 255;
-        chunk[2] = 255;
-        chunk[3] = 255;
-    }
 
     fractal_texture
         .update(None, &pixels, (screen_bounds.width() * 4) as usize)
@@ -502,6 +394,8 @@ fn main() -> std::io::Result<()> {
 
     let mut thread_pool = ThreadPool::new();
     thread_pool.recompute_fractal(&args, &work_packages);
+
+    let mut key_state: [bool; 2] = [false, false];
 
     'main_loop: loop {
         let mut rebuild_texture = false;
@@ -529,9 +423,9 @@ fn main() -> std::io::Result<()> {
                             .unwrap(),
                     };
 
-                    pixels[(y * args.screen_width * 4 + x * 4 + 0) as usize] = r;
+                    pixels[(y * args.screen_width * 4 + x * 4 + 2) as usize] = r;
                     pixels[(y * args.screen_width * 4 + x * 4 + 1) as usize] = g;
-                    pixels[(y * args.screen_width * 4 + x * 4 + 2) as usize] = b;
+                    pixels[(y * args.screen_width * 4 + x * 4 + 0) as usize] = b;
                 }
             }
 
@@ -548,9 +442,24 @@ fn main() -> std::io::Result<()> {
                     ..
                 } => break 'main_loop,
 
+                Event::KeyUp { keycode, .. } => {
+                    if let Some(keycode) = keycode {
+                        match keycode {
+                            Keycode::LCtrl => {
+                                key_state[ModKeys::LeftControl as usize] = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 Event::KeyDown { keycode, .. } => {
                     if let Some(keycode) = keycode {
                         match keycode {
+                            Keycode::LCtrl => {
+                                key_state[ModKeys::LeftControl as usize] = true;
+                            }
+
                             Keycode::Backspace => {
                                 args = ProgramArgs {
                                     screen_width: screen_bounds.width() as i32,
@@ -560,6 +469,25 @@ fn main() -> std::io::Result<()> {
 
                                 thread_pool.recompute_fractal(&args, &work_packages);
                             }
+                            Keycode::PageDown => {
+                                args.coloring = next_cycle(&args.coloring).unwrap();
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+                            Keycode::PageUp => {
+                                args.coloring = previous_cycle(&args.coloring).unwrap();
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+                            Keycode::KpPlus => {
+                                args.iterations = (args.iterations * 2)
+                                    .clamp(ProgramArgs::MIN_TERATIONS, ProgramArgs::MAX_ITERATIONS);
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+                            Keycode::KpMinus => {
+                                args.iterations = (args.iterations / 2)
+                                    .clamp(ProgramArgs::MIN_TERATIONS, ProgramArgs::MAX_ITERATIONS);
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+
                             _ => {}
                         }
                     }
@@ -567,18 +495,39 @@ fn main() -> std::io::Result<()> {
                 Event::MouseButtonDown {
                     mouse_btn, x, y, ..
                 } => {
-                    println!("Mouse down {:?}, {}::{}", mouse_btn, x, y);
+                    let Complex { re: cx, im: cy } = screen_coords_to_complex_coords(
+                        x as f32,
+                        y as f32,
+                        &args,
+                        ProgramArgs::FRACTAL_XMIN,
+                        ProgramArgs::FRACTAL_XMAX,
+                        ProgramArgs::FRACTAL_YMIN,
+                        ProgramArgs::FRACTAL_YMAX,
+                    );
+
+                    println!(
+                        "Mouse down {:?}, {}::{}, complex {} {}",
+                        mouse_btn, x, y, cx, cy
+                    );
+
+                    if key_state[ModKeys::LeftControl as usize] {
+                        args.zoom *= ProgramArgs::ZOOM_IN_FACTOR;
+                    }
+
+                    args.ox += cx * args.zoom;
+                    args.oy += cy * args.zoom;
+
                     thread_pool.recompute_fractal(&args, &work_packages);
                 }
                 Event::MouseWheel { y, .. } => {
                     let zoom = if y > 0 {
                         //
                         // zoom in
-                        args.zoom * 0.75f32
+                        args.zoom * ProgramArgs::ZOOM_IN_FACTOR
                     } else {
                         //
                         // zoom out
-                        (args.zoom * 2f32).min(1f32)
+                        (args.zoom * ProgramArgs::ZOOM_OUT_FACTOR).min(1f32)
                     };
 
                     if zoom != args.zoom {
@@ -644,10 +593,10 @@ fn worker_thread(
                     args
                 );
 
-                let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
-                let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
-                let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
-                let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
+                let fxmin = args.ox - ProgramArgs::FRACTAL_HALF_WIDTH * args.zoom;
+                let fxmax = args.ox + ProgramArgs::FRACTAL_HALF_WIDTH * args.zoom;
+                let fymin = args.oy - ProgramArgs::FRACTAL_HALF_HEIGHT * args.zoom;
+                let fymax = args.oy + ProgramArgs::FRACTAL_HALF_HEIGHT * args.zoom;
 
                 pkgs.par_iter()
                     .map(|pkg| {

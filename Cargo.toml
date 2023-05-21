@@ -10,3 +10,4 @@ clap = {version = "*", features = ["derive"] }
 sdl2 = "*"
 crossbeam = "*"
 rayon = "*"
+enum-iterator = "*"
