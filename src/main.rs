@@ -4,7 +4,8 @@ use clap::Parser;
 use enum_iterator::{next_cycle, previous_cycle};
 use rayon::prelude::*;
 use sdl2::event::Event;
-use sdl2::keyboard::{Keycode, Mod};
+use sdl2::keyboard::Keycode;
+use sdl2::mouse::MouseButton;
 use sdl2::rect::Rect;
 use sdl2::video::WindowBuilder;
 use std::io::{Error, ErrorKind};
@@ -492,8 +493,12 @@ fn main() -> std::io::Result<()> {
                         }
                     }
                 }
+
                 Event::MouseButtonDown {
-                    mouse_btn, x, y, ..
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
                 } => {
                     let Complex { re: cx, im: cy } = screen_coords_to_complex_coords(
                         x as f32,
@@ -505,11 +510,8 @@ fn main() -> std::io::Result<()> {
                         ProgramArgs::FRACTAL_YMAX,
                     );
 
-                    println!(
-                        "Mouse down {:?}, {}::{}, complex {} {}",
-                        mouse_btn, x, y, cx, cy
-                    );
-
+                    //
+                    // also zoom when centering if CTRL is down
                     if key_state[ModKeys::LeftControl as usize] {
                         args.zoom *= ProgramArgs::ZOOM_IN_FACTOR;
                     }
@@ -519,6 +521,7 @@ fn main() -> std::io::Result<()> {
 
                     thread_pool.recompute_fractal(&args, &work_packages);
                 }
+
                 Event::MouseWheel { y, .. } => {
                     let zoom = if y > 0 {
                         //
@@ -638,7 +641,6 @@ fn worker_thread(
                             .expect("Failed to send work package result to main");
                     });
 
-                // thread::sleep(Duration::from_secs(2));
                 tx.send(ThreadPoolMessage::ComputationDone(id))
                     .expect("Worker failed to send result");
             }
