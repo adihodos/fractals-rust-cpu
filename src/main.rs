@@ -1,8 +1,13 @@
 #![allow(dead_code)]
 
 use clap::Parser;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use rayon::prelude::*;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::rect::Rect;
+use sdl2::video::WindowBuilder;
+use std::io::{Error, ErrorKind};
+use std::thread::{self, JoinHandle};
 use std::{io::Write, path::PathBuf};
 
 mod complex;
@@ -172,6 +177,22 @@ struct ProgramArgs {
     oy: f32,
 }
 
+impl std::default::Default for ProgramArgs {
+    fn default() -> Self {
+        Self {
+            screen_width: 1024,
+            screen_height: 1024,
+            tile_size: 8,
+            iterations: 16,
+            workers: 8,
+            coloring: Coloring::BlackWhite,
+            zoom: 1f32,
+            ox: 0f32,
+            oy: 0f32,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 struct WorkResult {
     pixel: (i32, i32),
@@ -250,11 +271,165 @@ const FRACTAL_YMAX: f32 = 1f32;
 const FRACTAL_HALF_WIDTH: f32 = (FRACTAL_XMAX - FRACTAL_XMIN) * 0.5f32;
 const FRACTAL_HALF_HEIGHT: f32 = (FRACTAL_YMAX - FRACTAL_YMIN) * 0.5f32;
 
-fn main() {
-    let args = ProgramArgs::parse();
-    println!("{:?}", args);
+// fn main() {
+//     let args = ProgramArgs::parse();
+//     println!("{:?}", args);
 
-    let mut pixels = vec![(0u8, 0u8, 0u8); (args.screen_width * args.screen_height) as usize];
+//     let mut pixels = vec![(0u8, 0u8, 0u8); (args.screen_width * args.screen_height) as usize];
+//     let mut escapes = vec![
+//         WorkResult {
+//             pixel: (0, 0),
+//             z: Complex::new(0f32, 0f32),
+//             n: 0f32
+//         };
+//         (args.screen_width * args.screen_height) as usize
+//     ];
+
+//     let packages_x = args.screen_width / args.tile_size;
+//     let packages_y = args.screen_height / args.tile_size;
+
+//     let mut work_packages = Vec::<WorkPackage>::new();
+//     for y in 0..args.tile_size {
+//         for x in 0..args.tile_size {
+//             work_packages.push(WorkPackage {
+//                 x0: (x * packages_x).min(args.screen_width),
+//                 y0: (y * packages_y).min(args.screen_height),
+//                 x1: ((x + 1) * packages_x).min(args.screen_width),
+//                 y1: ((y + 1) * packages_y).min(args.screen_width),
+//             })
+//         }
+//     }
+
+//     let (sender, receiver) = std::sync::mpsc::channel::<WorkResult>();
+
+//     let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
+//     let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
+//     let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
+//     let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
+
+//     let work_packages = Arc::new(Mutex::new(work_packages));
+//     let workers = (0..args.workers)
+//         .map(|_| {
+//             let work_queue = Arc::clone(&work_packages);
+//             let chan_sender = sender.clone();
+
+//             thread::spawn(move || 'main_loop: loop {
+//                 let maybe_work = work_queue
+//                     .lock()
+//                     .ok()
+//                     .map(|mut wkqueue| wkqueue.pop())
+//                     .flatten();
+
+//                 if let Some(work_pkg) = maybe_work {
+//                     for py in work_pkg.y0..work_pkg.y1 {
+//                         for px in work_pkg.x0..work_pkg.x1 {
+//                             let c = screen_coords_to_complex_coords(
+//                                 px as f32, py as f32, &args, fxmin, fxmax, fymin, fymax,
+//                             );
+
+//                             let mut z = Complex::new(0f32, 0f32);
+//                             let mut iterations = 0;
+
+//                             while z.abs_squared() <= 4f32 && iterations < args.iterations {
+//                                 z = z * z + c;
+//                                 iterations += 1;
+//                             }
+
+//                             chan_sender
+//                                 .send(WorkResult {
+//                                     pixel: (px, py),
+//                                     z,
+//                                     n: iterations as f32,
+//                                 })
+//                                 .unwrap();
+//                         }
+//                     }
+//                 } else {
+//                     break 'main_loop;
+//                 }
+//             })
+//         })
+//         .collect::<Vec<_>>();
+
+//     drop(sender);
+
+//     for res in receiver.iter() {
+//         let (px, py) = res.pixel;
+//         escapes[(py * args.screen_width + px) as usize] = res;
+//     }
+
+//     for w in workers {
+//         w.join().expect("Failed to join worker thread!");
+//     }
+
+//     let histogram_coloring = if args.coloring == Coloring::Histogram {
+//         Some(HistogramColoringState::new(&escapes, &args))
+//     } else {
+//         None
+//     };
+
+//     for y in 0..args.screen_height {
+//         for x in 0..args.screen_width {
+//             let e = escapes[(y * args.screen_width + x) as usize];
+
+//             let pixel_color = match args.coloring {
+//                 Coloring::BlackWhite => color_simple(e.n, args.iterations, e.z),
+//                 Coloring::Hsv => color_hsv(e.n, args.iterations, e.z),
+//                 Coloring::Log => color_log(e.n, args.iterations, e.z),
+//                 Coloring::Smooth => color_smooth(e.n, args.iterations, e.z),
+//                 Coloring::Histogram => histogram_coloring
+//                     .as_ref()
+//                     .map(|histogram| histogram.colorize(e.n, &args, e.z))
+//                     .unwrap(),
+//             };
+
+//             pixels[(y * args.screen_width + x) as usize] = pixel_color;
+//         }
+//     }
+
+//     write_image(
+//         "mandelbrot.pbm".into(),
+//         args.screen_width,
+//         args.screen_height,
+//         &pixels,
+//     );
+// }
+
+fn pick_main_display(vid_sys: &sdl2::VideoSubsystem) -> std::io::Result<Rect> {
+    vid_sys
+        .num_video_displays()
+        .ok()
+        .map(|display_count| {
+            (0..display_count).find_map(|dpy_idx| {
+                vid_sys
+                    .display_bounds(dpy_idx)
+                    .ok()
+                    .filter(|bounds| bounds.x == 0 && bounds.y == 0)
+            })
+        })
+        .flatten()
+        .ok_or_else(|| Error::new(ErrorKind::Other, "Failed to get main display"))
+}
+
+fn main() -> std::io::Result<()> {
+    let sdl_ctx = sdl2::init().expect(&format!("Failed to init SDL2: {}", sdl2::get_error()));
+    let video_subsys = sdl_ctx.video().expect(&format!(
+        "Failed to get video subsystem: {}",
+        sdl2::get_error()
+    ));
+
+    let screen_bounds = pick_main_display(&video_subsys)?;
+    println!("Main display bounds {:?}", screen_bounds);
+
+    let mut args = {
+        let args = ProgramArgs::parse();
+        ProgramArgs {
+            screen_width: screen_bounds.width() as i32,
+            screen_height: screen_bounds.height() as i32,
+            ..args
+        }
+    };
+
     let mut escapes = vec![
         WorkResult {
             pixel: (0, 0),
@@ -279,97 +454,334 @@ fn main() {
         }
     }
 
-    let (sender, receiver) = std::sync::mpsc::channel::<WorkResult>();
+    let main_window = WindowBuilder::new(
+        &video_subsys,
+        "Mandelbrot Explorer",
+        screen_bounds.width(),
+        screen_bounds.height(),
+    )
+    .borderless()
+    .fullscreen_desktop()
+    .maximized()
+    .build()
+    .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-    let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
-    let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
-    let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
-    let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
+    let mut canvas = main_window
+        .into_canvas()
+        .build()
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-    let work_packages = Arc::new(Mutex::new(work_packages));
-    let workers = (0..args.workers)
-        .map(|_| {
-            let work_queue = Arc::clone(&work_packages);
-            let chan_sender = sender.clone();
+    let mut event_pump = sdl_ctx
+        .event_pump()
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-            thread::spawn(move || 'main_loop: loop {
-                let maybe_work = work_queue
-                    .lock()
-                    .ok()
-                    .map(|mut wkqueue| wkqueue.pop())
-                    .flatten();
+    let texture_creator = canvas.texture_creator();
 
-                if let Some(work_pkg) = maybe_work {
-                    for py in work_pkg.y0..work_pkg.y1 {
-                        for px in work_pkg.x0..work_pkg.x1 {
-                            let c = screen_coords_to_complex_coords(
-                                px as f32, py as f32, &args, fxmin, fxmax, fymin, fymax,
-                            );
+    let mut fractal_texture = texture_creator
+        .create_texture(
+            canvas.default_pixel_format(),
+            sdl2::render::TextureAccess::Streaming,
+            screen_bounds.width(),
+            screen_bounds.height(),
+        )
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
-                            let mut z = Complex::new(0f32, 0f32);
-                            let mut iterations = 0;
+    println!("Texture {:?}", fractal_texture.query());
 
-                            while z.abs_squared() <= 4f32 && iterations < args.iterations {
-                                z = z * z + c;
-                                iterations += 1;
-                            }
-
-                            chan_sender
-                                .send(WorkResult {
-                                    pixel: (px, py),
-                                    z,
-                                    n: iterations as f32,
-                                })
-                                .unwrap();
-                        }
-                    }
-                } else {
-                    break 'main_loop;
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-
-    drop(sender);
-
-    for res in receiver.iter() {
-        let (px, py) = res.pixel;
-        escapes[(py * args.screen_width + px) as usize] = res;
+    let mut pixels = vec![255u8; (screen_bounds.width() * screen_bounds.height() * 4) as usize];
+    for chunk in pixels.chunks_mut(4) {
+        chunk[0] = 0;
+        chunk[1] = 255;
+        chunk[2] = 255;
+        chunk[3] = 255;
     }
 
-    for w in workers {
-        w.join().expect("Failed to join worker thread!");
-    }
+    fractal_texture
+        .update(None, &pixels, (screen_bounds.width() * 4) as usize)
+        .expect("Failed to update texture");
 
-    let histogram_coloring = if args.coloring == Coloring::Histogram {
-        Some(HistogramColoringState::new(&escapes, &args))
-    } else {
-        None
-    };
+    let mut thread_pool = ThreadPool::new();
+    thread_pool.recompute_fractal(&args, &work_packages);
 
-    for y in 0..args.screen_height {
-        for x in 0..args.screen_width {
-            let e = escapes[(y * args.screen_width + x) as usize];
+    'main_loop: loop {
+        let mut rebuild_texture = false;
+        thread_pool.main_loop(&args, &mut escapes, &mut rebuild_texture);
 
-            let pixel_color = match args.coloring {
-                Coloring::BlackWhite => color_simple(e.n, args.iterations, e.z),
-                Coloring::Hsv => color_hsv(e.n, args.iterations, e.z),
-                Coloring::Log => color_log(e.n, args.iterations, e.z),
-                Coloring::Smooth => color_smooth(e.n, args.iterations, e.z),
-                Coloring::Histogram => histogram_coloring
-                    .as_ref()
-                    .map(|histogram| histogram.colorize(e.n, &args, e.z))
-                    .unwrap(),
+        if rebuild_texture {
+            let histogram_coloring = if args.coloring == Coloring::Histogram {
+                Some(HistogramColoringState::new(&escapes, &args))
+            } else {
+                None
             };
 
-            pixels[(y * args.screen_width + x) as usize] = pixel_color;
+            for y in 0..args.screen_height {
+                for x in 0..args.screen_width {
+                    let e = escapes[(y * args.screen_width + x) as usize];
+
+                    let (r, g, b) = match args.coloring {
+                        Coloring::BlackWhite => color_simple(e.n, args.iterations, e.z),
+                        Coloring::Hsv => color_hsv(e.n, args.iterations, e.z),
+                        Coloring::Log => color_log(e.n, args.iterations, e.z),
+                        Coloring::Smooth => color_smooth(e.n, args.iterations, e.z),
+                        Coloring::Histogram => histogram_coloring
+                            .as_ref()
+                            .map(|histogram| histogram.colorize(e.n, &args, e.z))
+                            .unwrap(),
+                    };
+
+                    pixels[(y * args.screen_width * 4 + x * 4 + 0) as usize] = r;
+                    pixels[(y * args.screen_width * 4 + x * 4 + 1) as usize] = g;
+                    pixels[(y * args.screen_width * 4 + x * 4 + 2) as usize] = b;
+                }
+            }
+
+            fractal_texture
+                .update(None, &pixels, (screen_bounds.width() * 4) as usize)
+                .expect("Failed to update texture");
+        }
+
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'main_loop,
+
+                Event::KeyDown { keycode, .. } => {
+                    if let Some(keycode) = keycode {
+                        match keycode {
+                            Keycode::Backspace => {
+                                args = ProgramArgs {
+                                    screen_width: screen_bounds.width() as i32,
+                                    screen_height: screen_bounds.height() as i32,
+                                    ..ProgramArgs::default()
+                                };
+
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Event::MouseButtonDown {
+                    mouse_btn, x, y, ..
+                } => {
+                    println!("Mouse down {:?}, {}::{}", mouse_btn, x, y);
+                    thread_pool.recompute_fractal(&args, &work_packages);
+                }
+                Event::MouseWheel { y, .. } => {
+                    let zoom = if y > 0 {
+                        //
+                        // zoom in
+                        args.zoom * 0.75f32
+                    } else {
+                        //
+                        // zoom out
+                        (args.zoom * 2f32).min(1f32)
+                    };
+
+                    if zoom != args.zoom {
+                        args.zoom = zoom;
+                        thread_pool.recompute_fractal(&args, &work_packages);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        canvas
+            .copy(&fractal_texture, None, None)
+            .expect("Failed to copy texture data");
+        canvas.present();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    Ok(())
+}
+
+struct PoolWorker {
+    handle: JoinHandle<()>,
+    tx: crossbeam::channel::Sender<ThreadPoolMessage>,
+}
+
+#[derive(Clone, Debug)]
+enum ThreadPoolMessage {
+    Quit,
+    Work {
+        pkgs: Vec<WorkPackage>,
+        args: ProgramArgs,
+    },
+    WorkPackageResult(Vec<WorkResult>),
+    ComputationDone(i32),
+}
+
+struct ThreadPool {
+    worker: Option<JoinHandle<()>>,
+    work_in_progress: bool,
+    rx: crossbeam::channel::Receiver<ThreadPoolMessage>,
+    tx: crossbeam::channel::Sender<ThreadPoolMessage>,
+}
+
+fn worker_thread(
+    rx: crossbeam::channel::Receiver<ThreadPoolMessage>,
+    tx: crossbeam::channel::Sender<ThreadPoolMessage>,
+    id: i32,
+) {
+    'main_loop: loop {
+        let msg = rx.recv().expect("Worker recv() error");
+
+        match msg {
+            ThreadPoolMessage::Quit => {
+                println!("Worker {} quitting ...", id);
+                break 'main_loop;
+            }
+            ThreadPoolMessage::Work { pkgs, args } => {
+                println!(
+                    "Worker {} starting work, packages {}, args {:?}",
+                    id,
+                    pkgs.len(),
+                    args
+                );
+
+                let fxmin = args.ox - FRACTAL_HALF_WIDTH * args.zoom;
+                let fxmax = args.ox + FRACTAL_HALF_WIDTH * args.zoom;
+                let fymin = args.oy - FRACTAL_HALF_HEIGHT * args.zoom;
+                let fymax = args.oy + FRACTAL_HALF_HEIGHT * args.zoom;
+
+                pkgs.par_iter()
+                    .map(|pkg| {
+                        let pixels_x = pkg.x1 - pkg.x0;
+                        let pixels_y = pkg.y1 - pkg.y0;
+
+                        assert!(pixels_x > 0);
+                        assert!(pixels_y > 0);
+
+                        let mut escapes: Vec<WorkResult> =
+                            Vec::with_capacity((pixels_x * pixels_y) as usize);
+
+                        for y in pkg.y0..pkg.y1 {
+                            for x in pkg.x0..pkg.x1 {
+                                let c = screen_coords_to_complex_coords(
+                                    x as f32, y as f32, &args, fxmin, fxmax, fymin, fymax,
+                                );
+
+                                let mut z = Complex::new(0f32, 0f32);
+                                let mut iterations = 0;
+
+                                while z.abs_squared() <= 4f32 && iterations < args.iterations {
+                                    z = z * z + c;
+                                    iterations += 1;
+                                }
+
+                                escapes.push(WorkResult {
+                                    pixel: (x, y),
+                                    z,
+                                    n: iterations as f32,
+                                });
+                            }
+                        }
+
+                        escapes
+                    })
+                    .for_each(|escapes| {
+                        tx.send(ThreadPoolMessage::WorkPackageResult(escapes))
+                            .expect("Failed to send work package result to main");
+                    });
+
+                // thread::sleep(Duration::from_secs(2));
+                tx.send(ThreadPoolMessage::ComputationDone(id))
+                    .expect("Worker failed to send result");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum LoopAction {
+    Nothing,
+    RebuildFractalTexture,
+}
+
+impl ThreadPool {
+    fn new() -> ThreadPool {
+        //
+        // sender for pool, receiver for worker
+        let (send_to_worker, receiver_worker) =
+            crossbeam::channel::unbounded::<ThreadPoolMessage>();
+        //
+        // sender for worker, receiver for pool
+        let (send_to_main, receiver_main) = crossbeam::channel::unbounded::<ThreadPoolMessage>();
+
+        let worker = Some(thread::spawn(move || {
+            worker_thread(receiver_worker, send_to_main, 0)
+        }));
+
+        ThreadPool {
+            work_in_progress: false,
+            worker,
+            tx: send_to_worker,
+            rx: receiver_main,
         }
     }
 
-    write_image(
-        "mandelbrot.pbm".into(),
-        args.screen_width,
-        args.screen_height,
-        &pixels,
-    );
+    fn main_loop(
+        &mut self,
+        args: &ProgramArgs,
+        escapes: &mut Vec<WorkResult>,
+        rebuild_texture: &mut bool,
+    ) {
+        if self.work_in_progress {
+            while let Ok(worker_msg) = self.rx.try_recv() {
+                match worker_msg {
+                    ThreadPoolMessage::ComputationDone(id) => {
+                        println!("worker {} finished computation", id);
+                        self.work_in_progress = false;
+                        //
+                        // rebuild fractal texture
+                        println!("Rebuilding fractal texture!");
+                        *rebuild_texture = true;
+                    }
+                    ThreadPoolMessage::WorkPackageResult(res) => {
+                        assert!(self.work_in_progress);
+                        for r in res {
+                            let (x, y) = r.pixel;
+                            escapes[(y * args.screen_width + x) as usize] = r;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn recompute_fractal(&mut self, args: &ProgramArgs, work_pkgs: &Vec<WorkPackage>) {
+        if self.work_in_progress {
+            println!("Cant recompute, previous job is unfinished");
+            return;
+        }
+
+        println!("Recomputing fractal!");
+
+        self.work_in_progress = true;
+        self.tx
+            .send(ThreadPoolMessage::Work {
+                pkgs: work_pkgs.clone(),
+                args: *args,
+            })
+            .expect("Failed to send message to workers");
+    }
+}
+
+impl std::ops::Drop for ThreadPool {
+    fn drop(&mut self) {
+        self.tx
+            .send(ThreadPoolMessage::Quit)
+            .expect("Failed to send quit to workers!");
+
+        self.worker
+            .take()
+            .map(|handle| handle.join().expect("Failed to join worker thread"));
+    }
 }
