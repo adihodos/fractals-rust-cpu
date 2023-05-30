@@ -94,7 +94,7 @@ fn hsv_to_rgb(hsv: (f32, f32, f32)) -> (u8, u8, u8) {
 }
 
 fn color_simple(n: f32, max_iterations: i32, _z: Complex) -> RGB8 {
-    let px = 255u8 - ((n / max_iterations as f32) * 255f32) as u8;
+    let px = 255u8 - ((n / max_iterations as f32).sqrt() * 255f32) as u8;
     (px, px, px)
 }
 
@@ -183,6 +183,15 @@ fn color_orbit_trap2(e: &WorkResult, args: &ProgramArgs) -> (u8, u8, u8) {
     f32_color_to_u8_color((col.x, col.y, col.z))
 }
 
+fn color_gradient(e: &WorkResult, args: &ProgramArgs, grad: &colorgrad::Gradient) -> RGB8 {
+    let distance = e.z.abs();
+    let frac_iter = (distance.log(args.esc_radius)).log2();
+    let iter = e.n - frac_iter;
+    let m = (iter / args.iterations as f32).sqrt();
+    let c = grad.at(m as f64).to_rgba8();
+    (c[0], c[1], c[2])
+}
+
 fn linear_interpolate(a: f32, b: f32, t: f32) -> f32 {
     a * (1f32 - t) + b * t
 }
@@ -204,6 +213,7 @@ enum Coloring {
     Histogram,
     OrbitTrap,
     OrbitTrap2,
+    Gradient,
 }
 
 #[derive(clap::Parser, Copy, Clone, Debug)]
@@ -227,6 +237,8 @@ struct ProgramArgs {
     ox: f32,
     #[arg(default_value_t = 0f32)]
     oy: f32,
+    #[arg(short = 'e', long, default_value_t = 2f32)]
+    esc_radius: f32,
 }
 
 impl std::default::Default for ProgramArgs {
@@ -241,6 +253,7 @@ impl std::default::Default for ProgramArgs {
             zoom: 1f32,
             ox: 0f32,
             oy: 0f32,
+            esc_radius: 2f32,
         }
     }
 }
@@ -452,6 +465,8 @@ fn main() -> std::io::Result<()> {
 
     let mut key_state: [bool; 2] = [false, false];
 
+    let gradient = colorgrad::sinebow();
+
     'main_loop: loop {
         let mut rebuild_texture = false;
         thread_pool.main_loop(&args, &mut escapes, &mut rebuild_texture);
@@ -479,6 +494,7 @@ fn main() -> std::io::Result<()> {
 
                         Coloring::OrbitTrap => color_orbit_trap(&e, &args),
                         Coloring::OrbitTrap2 => color_orbit_trap2(&e, &args),
+                        Coloring::Gradient => color_gradient(&e, &args, &gradient),
                     };
 
                     pixels[(y * args.screen_width * 4 + x * 4 + 2) as usize] = r;
@@ -543,6 +559,16 @@ fn main() -> std::io::Result<()> {
                             Keycode::KpMinus => {
                                 args.iterations = (args.iterations / 2)
                                     .clamp(ProgramArgs::MIN_TERATIONS, ProgramArgs::MAX_ITERATIONS);
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+
+                            Keycode::Insert => {
+                                args.esc_radius = (args.esc_radius * 2f32).min(512f32);
+                                thread_pool.recompute_fractal(&args, &work_packages);
+                            }
+
+                            Keycode::Delete => {
+                                args.esc_radius = (args.esc_radius * 0.5f32).max(2f32);
                                 thread_pool.recompute_fractal(&args, &work_packages);
                             }
 
@@ -680,7 +706,9 @@ fn worker_thread(
                                 let mut trap = 1e20f32;
                                 let mut dmin = Vec4::same(1000f32);
 
-                                while z.abs_squared() <= 4f32 && iterations < args.iterations {
+                                while z.abs_squared() <= args.esc_radius * args.esc_radius
+                                    && iterations < args.iterations
+                                {
                                     z = z * z + c;
                                     iterations += 1;
 
