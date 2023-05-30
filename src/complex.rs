@@ -65,3 +65,14 @@ impl Mul<Complex> for f32 {
         c * self
     }
 }
+
+pub fn dot(a: Complex, b: Complex) -> f32 {
+    a.re * b.re + a.im * b.im
+}
+
+pub fn fract(a: Complex) -> Complex {
+    Complex {
+        re: a.re.fract(),
+        im: a.im.fract(),
+    }
+}

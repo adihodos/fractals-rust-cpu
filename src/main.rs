@@ -13,8 +13,12 @@ use std::thread::{self, JoinHandle};
 use std::{io::Write, path::PathBuf};
 
 mod complex;
+mod vec3;
+mod vec4;
 
-use complex::Complex;
+use complex::*;
+use vec3::*;
+use vec4::*;
 
 type RGB8 = (u8, u8, u8);
 
@@ -135,6 +139,50 @@ fn color_hsv(iterations: f32, max_iterations: i32, z: Complex) -> (u8, u8, u8) {
     hsv_to_rgb(hsv)
 }
 
+fn color_orbit_trap(e: &WorkResult, _args: &ProgramArgs) -> (u8, u8, u8) {
+    let f = 1f32 + e.trap.log2() / 16f32;
+
+    f32_color_to_u8_color((f, f * f, f * f * f))
+}
+
+fn f32_color_to_u8_color((r, g, b): (f32, f32, f32)) -> RGB8 {
+    ((r * 255f32) as u8, (g * 255f32) as u8, (b * 255f32) as u8)
+}
+
+fn color_orbit_trap2(e: &WorkResult, args: &ProgramArgs) -> (u8, u8, u8) {
+    let col = Vec3::same(e.dmin.w);
+    let col = mix(
+        col,
+        Vec3::new(1.0f32, 0.80f32, 0.60f32),
+        1f32.min((e.dmin.x * 0.25f32).powf(0.20f32)),
+    );
+
+    let col = mix(
+        col,
+        Vec3::new(0.72f32, 0.70f32, 0.60f32),
+        1f32.min((e.dmin.y * 0.50f32).powf(0.50f32)),
+    );
+
+    let col = mix(
+        col,
+        Vec3::same(1f32),
+        1f32 - 1f32.min((e.dmin.z * 1.00).powf(0.15f32)),
+    );
+
+    let col = 1.25f32 * col * col;
+    let col = col * col * (Vec3::same(3f32) - 2f32 * col);
+
+    let (px, py) = (
+        e.pixel.0 as f32 / args.screen_width as f32,
+        e.pixel.1 as f32 / args.screen_height as f32,
+    );
+
+    let u = 0.5f32 * (16f32 * px * (1f32 - px) * py * (1f32 - py)).powf(0.15f32);
+    let col = col * (Vec3::same(0.5f32) + Vec3::same(u));
+
+    f32_color_to_u8_color((col.x, col.y, col.z))
+}
+
 fn linear_interpolate(a: f32, b: f32, t: f32) -> f32 {
     a * (1f32 - t) + b * t
 }
@@ -154,6 +202,8 @@ enum Coloring {
     Smooth,
     Log,
     Histogram,
+    OrbitTrap,
+    OrbitTrap2,
 }
 
 #[derive(clap::Parser, Copy, Clone, Debug)]
@@ -215,6 +265,8 @@ impl ProgramArgs {
 struct WorkResult {
     pixel: (i32, i32),
     z: Complex,
+    trap: f32,
+    dmin: Vec4,
     n: f32,
 }
 
@@ -327,6 +379,8 @@ fn main() -> std::io::Result<()> {
         WorkResult {
             pixel: (0, 0),
             z: Complex::new(0f32, 0f32),
+            trap: 1e20f32,
+            dmin: Vec4::same(1000f32),
             n: 0f32
         };
         (args.screen_width * args.screen_height) as usize
@@ -422,6 +476,9 @@ fn main() -> std::io::Result<()> {
                             .as_ref()
                             .map(|histogram| histogram.colorize(e.n, &args, e.z))
                             .unwrap(),
+
+                        Coloring::OrbitTrap => color_orbit_trap(&e, &args),
+                        Coloring::OrbitTrap2 => color_orbit_trap2(&e, &args),
                     };
 
                     pixels[(y * args.screen_width * 4 + x * 4 + 2) as usize] = r;
@@ -620,15 +677,33 @@ fn worker_thread(
 
                                 let mut z = Complex::new(0f32, 0f32);
                                 let mut iterations = 0;
+                                let mut trap = 1e20f32;
+                                let mut dmin = Vec4::same(1000f32);
 
                                 while z.abs_squared() <= 4f32 && iterations < args.iterations {
                                     z = z * z + c;
                                     iterations += 1;
+
+                                    let dzz = dot(z, z);
+
+                                    trap = trap.min(dzz);
+
+                                    dmin = min(
+                                        dmin,
+                                        Vec4::new(
+                                            (z.im + 0.5f32 * z.re.sin()).abs(),
+                                            (1f32 + z.re + 0.5f32 * z.im.sin()).abs(),
+                                            dzz,
+                                            (fract(z) - Complex::new(0.5f32, 0.5f32)).abs(),
+                                        ),
+                                    );
                                 }
 
                                 escapes.push(WorkResult {
                                     pixel: (x, y),
                                     z,
+                                    trap,
+                                    dmin,
                                     n: iterations as f32,
                                 });
                             }
